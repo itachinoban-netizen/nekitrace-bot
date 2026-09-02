@@ -1,7 +1,6 @@
 # Не пушить в GitHub
 *.exe
 *.ico
-*.png
 *.zip
 *.7z
 *.bat
@@ -19,12 +18,14 @@ setup_launcher.py
 launcher.py
 sfx_launcher.py
 make_sfx.py
+make_icon.py
 qr_discord.png
 discord_check.png
 discord_dl.png
 discord_preview.png
 discord_raw.png
 icon_preview_256.png
+icon_preview_dl.png
 7z_extra/
 7z-extra.7z
 7za_x64.exe
