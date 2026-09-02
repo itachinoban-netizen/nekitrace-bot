@@ -30,8 +30,11 @@ from telegram.ext import (
 logging.basicConfig(level=logging.WARNING)
 
 TOKEN   = "8818675950:AAGKHjMBcqV8V5OckfSeFF9LKU6AaBVPy1A"
-ADMIN_ID = 7675444496          # единственный администратор
-LOG_CHAT = 7675444496          # чат для логов (можно поменять на ID группы)
+ADMIN_ID   = 7675444496
+LOG_CHAT   = 7675444496
+CLIENT_CHAT = -1002519881821  # чат клиентов — скидка 99₽
+PRICE_FULL  = 199
+PRICE_VIP   = 99
 
 if getattr(__import__("sys"), "frozen", False):
     import sys as _sys
@@ -85,37 +88,63 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── /buy + кнопка ──────────────────────────────────────────────────────────
 
-async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    name = f"@{user.username}" if user.username else user.first_name
-    uid  = user.id
+async def is_client(bot, user_id: int) -> bool:
+    """Проверяет состоит ли пользователь в чате клиентов."""
+    try:
+        member = await bot.get_chat_member(chat_id=CLIENT_CHAT, user_id=user_id)
+        return member.status in ("member", "administrator", "creator", "restricted")
+    except Exception:
+        return False
 
-    text = (
-        "🛒 *Покупка доступа*\n\n"
-        "💰 Стоимость: *уточняйте у администратора*\n\n"
-        "Для оплаты свяжитесь с администратором или\n"
-        "нажмите кнопку ниже для отправки заявки:"
-    )
+
+async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user  = update.effective_user
+    name  = f"@{user.username}" if user.username else user.first_name
+    uid   = user.id
+
+    # Проверяем членство в чате клиентов
+    vip   = await is_client(ctx.bot, uid)
+    price = PRICE_VIP if vip else PRICE_FULL
+
+    if vip:
+        msg = (
+            f"🎉 *Специальное предложение!*\n\n"
+            f"Так как вы наш клиент, товар будет стоить "
+            f"*{PRICE_VIP} рублей* 🔥\n\n"
+            f"Нажмите кнопку ниже чтобы отправить заявку:"
+        )
+    else:
+        msg = (
+            f"🛒 *Покупка доступа*\n\n"
+            f"Так как вы не наш клиент и ранее не приобретали у нас товары, "
+            f"для вас стоимость составит *{PRICE_FULL} рублей*.\n\n"
+            f"💡 Вступите в наш чат клиентов и получите скидку до *{PRICE_VIP} руб*!\n\n"
+            f"Нажмите кнопку ниже чтобы отправить заявку:"
+        )
+
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📩 Отправить заявку", callback_data=f"buy_request:{uid}:{name}")
+        InlineKeyboardButton(
+            f"📩 Отправить заявку ({price}₽)",
+            callback_data=f"buy_request:{uid}:{name}:{price}"
+        )
     ]])
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
 
 async def on_buy_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Пользователь нажал 'Отправить заявку' — шлём чек в лог-чат админу."""
     query = update.callback_query
     await query.answer("✅ Заявка отправлена!")
 
-    parts  = query.data.split(":")
-    uid    = parts[1]
-    uname  = parts[2] if len(parts) > 2 else "unknown"
+    parts = query.data.split(":")
+    uid   = parts[1]
+    uname = parts[2] if len(parts) > 2 else "unknown"
+    price = parts[3] if len(parts) > 3 else "?"
 
-    # Сообщение-чек в лог-чат
     log_text = (
         f"💳 *Новая заявка на покупку*\n\n"
         f"👤 Пользователь: {uname}\n"
-        f"🆔 ID: `{uid}`\n\n"
-        f"Подтвердить или отклонить?"
+        f"🆔 ID: `{uid}`\n"
+        f"💰 Сумма: *{price} руб.*\n\n"
+        f"Подтвердить оплату?"
     )
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm:{uid}:{uname}"),
@@ -128,8 +157,10 @@ async def on_buy_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         reply_markup=kb
     )
     await query.edit_message_text(
-        "✅ Ваша заявка отправлена администратору!\n"
-        "Ожидайте подтверждения.",
+        f"✅ Заявка отправлена администратору!\n"
+        f"💰 Сумма к оплате: *{price} руб.*\n\n"
+        f"Ожидайте подтверждения. По вопросам — @itachi_panelll",
+        parse_mode="Markdown",
         reply_markup=None
     )
 
@@ -191,9 +222,8 @@ async def cmd_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "🔐 *NeKit Program* — профессиональный инструмент для безопасного удаления файлов.\n\n"
         "✅ Безвозвратное удаление данных\n"
         "✅ 3 прохода перезаписи\n"
-        "✅ Работает на Windows\n"
         "✅ Доступ привязывается к вашему ПК\n\n"
-        "По вопросам — обращайтесь к администратору.",
+        "По вопросам — @itachi_panelll",
         parse_mode="Markdown",
         reply_markup=main_keyboard()
     )
