@@ -8,7 +8,8 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters, ConversationHandler
+    MessageHandler, ContextTypes, filters, ConversationHandler,
+    PreCheckoutQueryHandler
 )
 
 logging.basicConfig(level=logging.WARNING)
@@ -17,8 +18,11 @@ TOKEN        = "8818675950:AAGKHjMBcqV8V5OckfSeFF9LKU6AaBVPy1A"
 ADMIN_ID     = 7675444496
 LOG_CHAT     = -5391318799   # чат для логов с чеками
 CLIENT_CHAT  = -1002519881821
-PRICE_FULL   = 199
-PRICE_VIP    = 99
+PRICE_FULL  = 199
+PRICE_VIP   = 99
+# Telegram Stars — 1 XTR ≈ ~1 руб (цены в звёздах)
+STARS_FULL  = 199
+STARS_VIP   = 99
 WAIT_RECEIPT = 1
 
 if getattr(__import__("sys"), "frozen", False):
@@ -128,6 +132,7 @@ async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid   = user.id
     vip   = await is_client(ctx.bot, uid)
     price = PRICE_VIP if vip else PRICE_FULL
+    stars = STARS_VIP  if vip else STARS_FULL
 
     if vip:
         msg = (f"🎉 *Специальное предложение!*\n\n"
@@ -137,12 +142,72 @@ async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                f"Так как вы не наш клиент и ранее не приобретали у нас товары, "
                f"для вас стоимость составит *{price} рублей*.")
 
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"💳 Купить ({price}₽)", callback_data=f"buy:{uid}:{price}")
-    ]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"💳 Купить ({price}₽)", callback_data=f"buy:{uid}:{price}")],
+        [InlineKeyboardButton(f"⭐ Оплатить звёздами ({stars} XTR)", callback_data=f"stars:{uid}:{stars}")],
+    ])
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
 
 # ── Покупка шаг 2 — реквизиты ─────────────────────────────────────────────
+
+async def on_stars_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    """Клиент нажал 'Оплатить звёздами' — отправляем инвойс."""
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split(":")
+    uid   = int(parts[1])
+    stars = int(parts[2]) if len(parts) > 2 else STARS_FULL
+
+    await ctx.bot.send_invoice(
+        chat_id=uid,
+        title="NoTrace — доступ к программе",
+        description="Безвозвратное удаление файлов. Доступ привязан к вашему ПК.",
+        payload=f"notrace_access:{uid}",
+        currency="XTR",
+        prices=[{"label": "Доступ к NoTrace", "amount": stars}],
+        provider_token="",
+    )
+    return ConversationHandler.END
+
+
+async def on_pre_checkout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Подтверждаем платёж."""
+    await update.pre_checkout_query.answer(ok=True)
+
+
+async def on_successful_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Платёж прошёл — отправляем файл автоматически."""
+    payment = update.message.successful_payment
+    uid     = update.effective_user.id
+    name    = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
+    stars   = payment.total_amount
+
+    await ctx.bot.send_message(
+        chat_id=LOG_CHAT,
+        text=(
+            f"⭐ *Оплата звёздами*\n\n"
+            f"👤 {name}\n"
+            f"🆔 `{uid}`\n"
+            f"💫 {stars} XTR\n\n"
+            f"✅ Файл отправлен автоматически."
+        ),
+        parse_mode="Markdown"
+    )
+
+    file_id = get_file_id()
+    if file_id:
+        try:
+            await ctx.bot.send_document(
+                chat_id=uid,
+                document=file_id,
+                caption="✅ Оплата получена! Спасибо!\n\n📦 Вот ваш файл программы.\nПо вопросам — @itachi_panelll"
+            )
+            return
+        except Exception as e:
+            await ctx.bot.send_message(LOG_CHAT, f"⚠️ Ошибка отправки файла {name}: {e}")
+
+    await ctx.bot.send_message(uid, "✅ Оплата получена! Файл будет выслан.\n@itachi_panelll")
+
 
 async def on_buy_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -484,8 +549,13 @@ def main():
     # Сначала ConversationHandler (чтобы перехватил чек)
     app.add_handler(conv)
 
-    app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
-    app.add_handler(CallbackQueryHandler(on_reject,  pattern=r"^reject:"))
+    app.add_handler(CallbackQueryHandler(on_stars_click, pattern=r"^stars:"))
+    app.add_handler(CallbackQueryHandler(on_confirm,     pattern=r"^confirm:"))
+    app.add_handler(CallbackQueryHandler(on_reject,      pattern=r"^reject:"))
+
+    # Telegram Stars платежи
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment))
+    app.add_handler(PreCheckoutQueryHandler(on_pre_checkout))
 
     # Документы от админа — только с /file в подписи
     app.add_handler(MessageHandler(
