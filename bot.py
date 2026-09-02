@@ -151,7 +151,7 @@ async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"💳 Купить ({price}₽)",           callback_data=f"buy:{uid}:{price}")],
-        [InlineKeyboardButton(f"⭐ Оплатить звёздами ({stars} XTR)", callback_data=f"stars:{uid}:{stars}")],
+        [InlineKeyboardButton(f"⭐ Оплатить звёздами ({stars} ⭐)", callback_data=f"stars:{uid}:{stars}")],
     ])
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
 
