@@ -512,6 +512,7 @@ def main():
         ],
         states={
             WAIT_RECEIPT: [
+                MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment),
                 MessageHandler(
                     filters.TEXT & filters.Regex("Информация"),
                     cmd_info
@@ -530,6 +531,7 @@ def main():
         fallbacks=[
             CommandHandler("start", cmd_start),
             CommandHandler("info",  cmd_info),
+            MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment),
             MessageHandler(filters.TEXT & filters.Regex("Информация"), cmd_info),
             MessageHandler(filters.TEXT & filters.Regex("Купить"),     cmd_buy),
         ],
@@ -546,16 +548,16 @@ def main():
     app.add_handler(CommandHandler("listusers", cmd_listusers))
     app.add_handler(CommandHandler("getid",     cmd_getid))
 
-    # Сначала ConversationHandler (чтобы перехватил чек)
+    # Stars платежи — ПЕРВЫМИ, до ConversationHandler
+    app.add_handler(PreCheckoutQueryHandler(on_pre_checkout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment))
+
+    # ConversationHandler
     app.add_handler(conv)
 
     app.add_handler(CallbackQueryHandler(on_stars_click, pattern=r"^stars:"))
     app.add_handler(CallbackQueryHandler(on_confirm,     pattern=r"^confirm:"))
     app.add_handler(CallbackQueryHandler(on_reject,      pattern=r"^reject:"))
-
-    # Telegram Stars платежи
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment))
-    app.add_handler(PreCheckoutQueryHandler(on_pre_checkout))
 
     # Документы от админа — только с /file в подписи
     app.add_handler(MessageHandler(
@@ -563,7 +565,7 @@ def main():
         on_admin_doc
     ))
 
-    # Кнопки клавиатуры
+    # Кнопки клавиатуры — последними
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, on_keyboard))
 
