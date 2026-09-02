@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.WARNING)
 
 TOKEN        = "8818675950:AAGKHjMBcqV8V5OckfSeFF9LKU6AaBVPy1A"
 ADMIN_ID     = 7675444496
-LOG_CHAT     = 7675444496
+LOG_CHAT     = -5391318799   # чат для логов с чеками
 CLIENT_CHAT  = -1002519881821
 PRICE_FULL   = 199
 PRICE_VIP    = 99
