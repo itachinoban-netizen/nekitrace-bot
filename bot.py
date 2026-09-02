@@ -125,13 +125,13 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "ℹ️ *О программе NoTrace*\n\n"
+        "ℹ️ О программе NoTrace\n\n"
         "🔐 Профессиональный инструмент для безопасного удаления файлов.\n\n"
         "✅ Безвозвратное удаление данных\n"
         "✅ 3 прохода перезаписи\n"
         "✅ Доступ привязывается к вашему ПК\n\n"
         "По вопросам — @itachi_panelll",
-        parse_mode="Markdown", reply_markup=main_kb()
+        reply_markup=main_kb()
     )
 
 # ── Покупка ────────────────────────────────────────────────────────────────
