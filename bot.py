@@ -272,11 +272,10 @@ async def on_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 chat_id=uid,
                 document=file_id,
                 caption=(
-                    "✅ *Ваша оплата подтверждена!*\n\n"
+                    "✅ Ваша оплата подтверждена!\n\n"
                     "📦 Вот ваш файл программы.\n"
                     "По вопросам — @itachi_panelll"
-                ),
-                parse_mode="Markdown"
+                )
             )
             sent = True
         except Exception as e:
@@ -287,8 +286,7 @@ async def on_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not sent:
         await ctx.bot.send_message(
             uid,
-            "✅ *Оплата подтверждена!*\nФайл будет выслан в ближайшее время.\n@itachi_panelll",
-            parse_mode="Markdown"
+            "✅ Оплата подтверждена! Файл будет выслан в ближайшее время.\n@itachi_panelll"
         )
 
     result = f"✅ Оплата *{uname}* подтверждена.\n" + ("📦 Файл отправлен." if sent else "⚠️ Файл не найден.")
