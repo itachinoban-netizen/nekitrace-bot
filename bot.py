@@ -19,8 +19,8 @@ LOG_CHAT     = -5391318799
 CLIENT_CHAT  = -1002519881821
 PRICE_FULL   = 199
 PRICE_VIP    = 99
-STARS_FULL   = 199
-STARS_VIP    = 99
+STARS_FULL   = 100
+STARS_VIP    = 50
 
 # Состояния ожидания чека
 WAITING_RECEIPT = {}   # {user_id: {"price": X, "name": Y}}
@@ -126,7 +126,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "ℹ️ О программе NoTrace\n\n"
-        "🔐 Профессиональный инструмент для безопасного удаления файлов.\n\n"
+        "🔐 Инструмент для безопасного удаления файлов.\n\n"
         "✅ Безвозвратное удаление данных\n"
         "✅ 3 прохода перезаписи\n"
         "✅ Доступ привязывается к вашему ПК\n\n"
