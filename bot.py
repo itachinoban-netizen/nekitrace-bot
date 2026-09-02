@@ -486,8 +486,11 @@ async def cmd_getid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def on_keyboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     t = update.message.text or ""
-    if "Купить" in t:     await cmd_buy(update, ctx)
-    elif "Информация" in t: await cmd_info(update, ctx)
+    tl = t.lower()
+    if "купить" in tl:
+        await cmd_buy(update, ctx)
+    elif "информац" in tl:
+        await cmd_info(update, ctx)
 
 # ── Документы от админа ────────────────────────────────────────────────────
 
@@ -514,11 +517,11 @@ def main():
             WAIT_RECEIPT: [
                 MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment),
                 MessageHandler(
-                    filters.TEXT & filters.Regex("Информация"),
+                    filters.TEXT & filters.Regex("(?i)информац"),
                     cmd_info
                 ),
                 MessageHandler(
-                    filters.TEXT & filters.Regex("Купить"),
+                    filters.TEXT & filters.Regex("(?i)купить"),
                     cmd_buy
                 ),
                 MessageHandler(
@@ -532,8 +535,8 @@ def main():
             CommandHandler("start", cmd_start),
             CommandHandler("info",  cmd_info),
             MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment),
-            MessageHandler(filters.TEXT & filters.Regex("Информация"), cmd_info),
-            MessageHandler(filters.TEXT & filters.Regex("Купить"),     cmd_buy),
+            MessageHandler(filters.TEXT & filters.Regex("(?i)информац"), cmd_info),
+            MessageHandler(filters.TEXT & filters.Regex("(?i)купить"),    cmd_buy),
         ],
         per_user=True, per_chat=True,
     )
