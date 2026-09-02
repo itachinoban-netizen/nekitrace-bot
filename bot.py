@@ -448,13 +448,26 @@ def main():
         states={
             WAIT_RECEIPT: [
                 MessageHandler(
+                    filters.TEXT & filters.Regex("Информация"),
+                    cmd_info
+                ),
+                MessageHandler(
+                    filters.TEXT & filters.Regex("Купить"),
+                    cmd_buy
+                ),
+                MessageHandler(
                     (filters.PHOTO | filters.Document.ALL |
                      (filters.TEXT & ~filters.COMMAND)),
                     on_receipt
-                )
+                ),
             ],
         },
-        fallbacks=[CommandHandler("start", cmd_start)],
+        fallbacks=[
+            CommandHandler("start", cmd_start),
+            CommandHandler("info",  cmd_info),
+            MessageHandler(filters.TEXT & filters.Regex("Информация"), cmd_info),
+            MessageHandler(filters.TEXT & filters.Regex("Купить"),     cmd_buy),
+        ],
         per_user=True, per_chat=True,
     )
 
