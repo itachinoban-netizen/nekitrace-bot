@@ -97,6 +97,15 @@ async def send_file_to(bot, uid: int, name: str) -> bool:
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     name = f"@{user.username}" if user.username else user.first_name
+
+    # Уведомление в лог-чат
+    try:
+        await ctx.bot.send_message(
+            chat_id=LOG_CHAT,
+            text=f"👤 {name} запустил бота"
+        )
+    except Exception:
+        pass
     text = (
         f"👋 Приветствуем *{name}* в нашем боте!\n\n"
         f"🔐 Здесь вы можете приобрести доступ к нашей программе.\n"
