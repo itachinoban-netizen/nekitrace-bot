@@ -1,4 +1,4 @@
-"""Telegram бот NoTrace — продажа доступа."""
+"""Telegram бот NoTrace — продажа доступа. Без ConversationHandler."""
 
 import json, os, hashlib, logging
 from pathlib import Path
@@ -8,36 +8,33 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters, ConversationHandler,
-    PreCheckoutQueryHandler
+    MessageHandler, ContextTypes, filters, PreCheckoutQueryHandler
 )
 
 logging.basicConfig(level=logging.WARNING)
 
 TOKEN        = "8818675950:AAGKHjMBcqV8V5OckfSeFF9LKU6AaBVPy1A"
 ADMIN_ID     = 7675444496
-LOG_CHAT     = -5391318799   # чат для логов с чеками
+LOG_CHAT     = -5391318799
 CLIENT_CHAT  = -1002519881821
-PRICE_FULL  = 199
-PRICE_VIP   = 99
-# Telegram Stars — 1 XTR ≈ ~1 руб (цены в звёздах)
-STARS_FULL  = 199
-STARS_VIP   = 99
-WAIT_RECEIPT = 1
+PRICE_FULL   = 199
+PRICE_VIP    = 99
+STARS_FULL   = 199
+STARS_VIP    = 99
+
+# Состояния ожидания чека
+WAITING_RECEIPT = {}   # {user_id: {"price": X, "name": Y}}
 
 if getattr(__import__("sys"), "frozen", False):
     import sys as _s; _BASE = Path(os.path.dirname(_s.executable))
 else:
     _BASE = Path(__file__).parent
 
-USERS_FILE  = Path(os.environ.get(
-    "USERS_FILE_PATH",
-    str(Path(os.environ.get("APPDATA", os.path.expanduser("~"))) / "DiscordApp" / "users.json")
-))
-# Храним file_id файла для клиентов (работает на Railway)
-FILE_ID_PATH  = _BASE / "client_file_id.txt"
-BANNER_PATH   = _BASE / "banner.png"
+USERS_FILE     = Path(os.environ.get("USERS_FILE_PATH",
+    str(Path(os.environ.get("APPDATA", os.path.expanduser("~"))) / "DiscordApp" / "users.json")))
+FILE_ID_PATH   = _BASE / "client_file_id.txt"
 BANNER_ID_PATH = _BASE / "banner_file_id.txt"
+BANNER_PATH    = _BASE / "banner.png"
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -69,15 +66,31 @@ async def is_client(bot, uid: int) -> bool:
     except Exception: return False
 
 def get_file_id() -> str | None:
-    """Получает сохранённый file_id файла для клиентов."""
     if FILE_ID_PATH.exists():
-        return FILE_ID_PATH.read_text(encoding="utf-8").strip() or None
+        v = FILE_ID_PATH.read_text(encoding="utf-8").strip()
+        return v or None
     return None
 
 def get_banner_id() -> str | None:
     if BANNER_ID_PATH.exists():
-        return BANNER_ID_PATH.read_text(encoding="utf-8").strip() or None
+        v = BANNER_ID_PATH.read_text(encoding="utf-8").strip()
+        return v or None
     return None
+
+async def send_file_to(bot, uid: int, name: str) -> bool:
+    file_id = get_file_id()
+    if not file_id:
+        await bot.send_message(LOG_CHAT, f"⚠️ Файл не загружен! /file чтобы загрузить.")
+        return False
+    try:
+        await bot.send_document(
+            chat_id=uid, document=file_id,
+            caption="✅ Оплата получена!\n\n📦 Вот ваш файл программы.\nПо вопросам — @itachi_panelll"
+        )
+        return True
+    except Exception as e:
+        await bot.send_message(LOG_CHAT, f"⚠️ Ошибка отправки {name}: {e}")
+        return False
 
 # ── /start ─────────────────────────────────────────────────────────────────
 
@@ -90,25 +103,21 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"После оплаты вы получите файл программы.\n\n"
         f"Выберите действие ниже 👇"
     )
-    # Пробуем отправить баннер
     banner_id = get_banner_id()
     if banner_id:
         try:
-            await update.message.reply_photo(
-                photo=banner_id, caption=text,
+            await update.message.reply_photo(photo=banner_id, caption=text,
                 parse_mode="Markdown", reply_markup=main_kb())
             return
-        except Exception: pass
+        except Exception:
+            BANNER_ID_PATH.write_text("", encoding="utf-8")
     if BANNER_PATH.exists():
         try:
             with open(str(BANNER_PATH), "rb") as f:
-                msg = await update.message.reply_photo(
-                    photo=f, caption=text,
+                msg = await update.message.reply_photo(photo=f, caption=text,
                     parse_mode="Markdown", reply_markup=main_kb())
-                # Сохраняем file_id баннера
-                fid = msg.photo[-1].file_id
-                BANNER_ID_PATH.write_text(fid, encoding="utf-8")
-                return
+                BANNER_ID_PATH.write_text(msg.photo[-1].file_id, encoding="utf-8")
+            return
         except Exception: pass
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_kb())
 
@@ -125,7 +134,7 @@ async def cmd_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown", reply_markup=main_kb()
     )
 
-# ── Покупка шаг 1 — цена ──────────────────────────────────────────────────
+# ── Покупка ────────────────────────────────────────────────────────────────
 
 async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user  = update.effective_user
@@ -134,24 +143,60 @@ async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     price = PRICE_VIP if vip else PRICE_FULL
     stars = STARS_VIP  if vip else STARS_FULL
 
-    if vip:
-        msg = (f"🎉 *Специальное предложение!*\n\n"
-               f"Так как вы наш клиент, товар будет стоить *{price} рублей* 🔥")
-    else:
-        msg = (f"🛒 *Покупка доступа*\n\n"
-               f"Так как вы не наш клиент и ранее не приобретали у нас товары, "
-               f"для вас стоимость составит *{price} рублей*.")
-
+    msg = (
+        f"🎉 *Специальное предложение!*\n\nТак как вы наш клиент, товар будет стоить *{price} рублей* 🔥"
+        if vip else
+        f"🛒 *Покупка доступа*\n\nТак как вы не наш клиент и ранее не приобретали у нас товары, "
+        f"для вас стоимость составит *{price} рублей*."
+    )
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"💳 Купить ({price}₽)", callback_data=f"buy:{uid}:{price}")],
+        [InlineKeyboardButton(f"💳 Купить ({price}₽)",           callback_data=f"buy:{uid}:{price}")],
         [InlineKeyboardButton(f"⭐ Оплатить звёздами ({stars} XTR)", callback_data=f"stars:{uid}:{stars}")],
     ])
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
 
-# ── Покупка шаг 2 — реквизиты ─────────────────────────────────────────────
+# ── Реквизиты ──────────────────────────────────────────────────────────────
 
-async def on_stars_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    """Клиент нажал 'Оплатить звёздами' — отправляем инвойс."""
+async def on_buy_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split(":")
+    price = parts[2] if len(parts) > 2 else "?"
+    uid   = query.from_user.id
+    name  = f"@{query.from_user.username}" if query.from_user.username else query.from_user.first_name
+
+    WAITING_RECEIPT[uid] = {"price": price, "name": name}
+
+    await query.edit_message_text(
+        f"💳 *Реквизиты для оплаты {price} руб.:*\n\n"
+        f"🇷🇺 *Озон Банк*\n`2204320674827466`\n\n"
+        f"🇺🇦 *Monobank*\n`4441114407987245`\n\n"
+        f"После оплаты нажмите кнопку ниже 👇",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📤 Отправить чек", callback_data=f"send_receipt:{uid}:{price}")
+        ]])
+    )
+
+async def on_send_receipt_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split(":")
+    price = parts[2] if len(parts) > 2 else "?"
+    uid   = query.from_user.id
+    name  = f"@{query.from_user.username}" if query.from_user.username else query.from_user.first_name
+
+    WAITING_RECEIPT[uid] = {"price": price, "name": name}
+
+    await query.edit_message_text(
+        f"📸 Пришлите скриншот чека оплаты *{price} руб.* прямо в этот чат.\n\n"
+        f"После проверки администратором вы получите файл программы.",
+        parse_mode="Markdown"
+    )
+
+# ── Stars ──────────────────────────────────────────────────────────────────
+
+async def on_stars_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     parts = query.data.split(":")
@@ -162,158 +207,81 @@ async def on_stars_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         chat_id=uid,
         title="NoTrace — доступ к программе",
         description="Безвозвратное удаление файлов. Доступ привязан к вашему ПК.",
-        payload=f"notrace_access:{uid}",
+        payload=f"notrace:{uid}",
         currency="XTR",
         prices=[{"label": "Доступ к NoTrace", "amount": stars}],
         provider_token="",
     )
-    return ConversationHandler.END
-
 
 async def on_pre_checkout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Подтверждаем платёж."""
     await update.pre_checkout_query.answer(ok=True)
 
-
 async def on_successful_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Платёж прошёл — отправляем файл автоматически."""
-    payment = update.message.successful_payment
-    uid     = update.effective_user.id
-    name    = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
-    stars   = payment.total_amount
+    uid   = update.effective_user.id
+    name  = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
+    stars = update.message.successful_payment.total_amount
 
-    await ctx.bot.send_message(
-        chat_id=LOG_CHAT,
-        text=(
-            f"⭐ *Оплата звёздами*\n\n"
-            f"👤 {name}\n"
-            f"🆔 `{uid}`\n"
-            f"💫 {stars} XTR\n\n"
-            f"✅ Файл отправлен автоматически."
-        ),
-        parse_mode="Markdown"
-    )
+    await ctx.bot.send_message(LOG_CHAT,
+        f"⭐ *Оплата звёздами*\n\n👤 {name}\n🆔 `{uid}`\n💫 {stars} XTR\n\n✅ Файл отправляется.",
+        parse_mode="Markdown")
 
-    file_id = get_file_id()
-    if file_id:
-        try:
-            await ctx.bot.send_document(
-                chat_id=uid,
-                document=file_id,
-                caption="✅ Оплата получена! Спасибо!\n\n📦 Вот ваш файл программы.\nПо вопросам — @itachi_panelll"
-            )
-            return
-        except Exception as e:
-            await ctx.bot.send_message(LOG_CHAT, f"⚠️ Ошибка отправки файла {name}: {e}")
+    sent = await send_file_to(ctx.bot, uid, name)
+    if not sent:
+        await ctx.bot.send_message(uid, "✅ Оплата получена! Файл будет выслан.\n@itachi_panelll")
 
-    await ctx.bot.send_message(uid, "✅ Оплата получена! Файл будет выслан.\n@itachi_panelll")
+# ── Получение чека ─────────────────────────────────────────────────────────
 
+async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Все входящие сообщения — чек или кнопки клавиатуры."""
+    user = update.effective_user
+    uid  = user.id
+    t    = (update.message.text or "").lower()
 
-async def on_buy_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    parts = query.data.split(":")
-    price = parts[2] if len(parts) > 2 else "?"
-    ctx.user_data["price"] = price
-    ctx.user_data["uid"]   = query.from_user.id
-    ctx.user_data["name"]  = (f"@{query.from_user.username}"
-                               if query.from_user.username
-                               else query.from_user.first_name)
+    # Кнопки клавиатуры — проверяем ПЕРВЫМИ
+    if "информац" in t:
+        await cmd_info(update, ctx)
+        return
+    if "купить" in t:
+        await cmd_buy(update, ctx)
+        return
 
-    await query.edit_message_text(
-        f"💳 *Реквизиты для оплаты {price} руб.:*\n\n"
-        f"🇷🇺 *Озон Банк*\n`2204320674827466`\n\n"
-        f"🇺🇦 *Monobank*\n`4441114407987245`\n\n"
-        f"После оплаты нажмите кнопку ниже 👇",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "📤 Отправить чек",
-                callback_data=f"send_receipt:{query.from_user.id}:{price}"
-            )
-        ]])
-    )
-    return ConversationHandler.END
+    # Чек — если пользователь в состоянии ожидания
+    if uid in WAITING_RECEIPT:
+        info  = WAITING_RECEIPT.pop(uid)
+        price = info.get("price", "?")
+        name  = info.get("name", f"@{user.username}" if user.username else user.first_name)
 
-# ── Покупка шаг 3 — просим чек ────────────────────────────────────────────
-
-async def on_send_receipt_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    parts = query.data.split(":")
-    price = parts[2] if len(parts) > 2 else "?"
-    ctx.user_data["price"] = price
-    ctx.user_data["uid"]   = query.from_user.id
-    ctx.user_data["name"]  = (f"@{query.from_user.username}"
-                               if query.from_user.username
-                               else query.from_user.first_name)
-
-    await query.edit_message_text(
-        f"📸 Пришлите скриншот чека оплаты *{price} руб.* в этот чат.\n\n"
-        f"После проверки администратором вы получите файл программы автоматически.",
-        parse_mode="Markdown"
-    )
-    return WAIT_RECEIPT
-
-# ── Покупка шаг 4 — получили чек ──────────────────────────────────────────
-
-async def on_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    user  = update.effective_user
-    name  = ctx.user_data.get("name", f"@{user.username}" if user.username else user.first_name)
-    uid   = user.id
-    price = ctx.user_data.get("price", "?")
-
-    log_text = (
-        f"💳 *Новый чек оплаты*\n\n"
-        f"👤 {name}\n"
-        f"🆔 `{uid}`\n"
-        f"💰 {price} руб.\n\n"
-        f"Подтвердить и отправить файл клиенту?"
-    )
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Подтвердить — выдать файл", callback_data=f"confirm:{uid}:{name}"),
-        InlineKeyboardButton("❌ Отклонить",                  callback_data=f"reject:{uid}:{name}"),
-    ]])
-
-    try:
-        if update.message.photo:
-            await ctx.bot.send_photo(
-                chat_id=LOG_CHAT,
-                photo=update.message.photo[-1].file_id,
-                caption=log_text,
-                parse_mode="Markdown",
-                reply_markup=kb
-            )
-        elif update.message.document:
-            await ctx.bot.send_document(
-                chat_id=LOG_CHAT,
-                document=update.message.document.file_id,
-                caption=log_text,
-                parse_mode="Markdown",
-                reply_markup=kb
-            )
-        else:
-            await ctx.bot.send_message(
-                chat_id=LOG_CHAT,
-                text=log_text + f"\n\n📝 Текст: {update.message.text}",
-                parse_mode="Markdown",
-                reply_markup=kb
-            )
-    except Exception as e:
-        await ctx.bot.send_message(
-            chat_id=LOG_CHAT,
-            text=log_text + f"\n\n⚠️ Ошибка пересылки чека: {e}",
-            parse_mode="Markdown",
-            reply_markup=kb
+        log_text = (
+            f"💳 *Новый чек оплаты*\n\n"
+            f"👤 {name}\n🆔 `{uid}`\n💰 {price} руб.\n\n"
+            f"Подтвердить и отправить файл клиенту?"
         )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Подтвердить — выдать файл", callback_data=f"confirm:{uid}:{name}"),
+            InlineKeyboardButton("❌ Отклонить",                  callback_data=f"reject:{uid}:{name}"),
+        ]])
 
-    await update.message.reply_text(
-        "✅ Чек получен! Ожидайте подтверждения.\n"
-        "После проверки вы получите файл программы.\n\n"
-        "По вопросам — @itachi_panelll",
-        reply_markup=main_kb()
-    )
-    return ConversationHandler.END
+        try:
+            if update.message.photo:
+                await ctx.bot.send_photo(LOG_CHAT, update.message.photo[-1].file_id,
+                    caption=log_text, parse_mode="Markdown", reply_markup=kb)
+            elif update.message.document:
+                await ctx.bot.send_document(LOG_CHAT, update.message.document.file_id,
+                    caption=log_text, parse_mode="Markdown", reply_markup=kb)
+            else:
+                await ctx.bot.send_message(LOG_CHAT,
+                    log_text + f"\n\n📝 Текст: {update.message.text}",
+                    parse_mode="Markdown", reply_markup=kb)
+        except Exception as e:
+            await ctx.bot.send_message(LOG_CHAT,
+                log_text + f"\n\n⚠️ Ошибка пересылки: {e}",
+                parse_mode="Markdown", reply_markup=kb)
+
+        await update.message.reply_text(
+            "✅ Чек получен! Ожидайте подтверждения.\n"
+            "После проверки вы получите файл программы.\n\nПо вопросам — @itachi_panelll",
+            reply_markup=main_kb()
+        )
 
 # ── Подтверждение / отклонение ────────────────────────────────────────────
 
@@ -327,37 +295,15 @@ async def on_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid   = int(parts[1])
     uname = parts[2] if len(parts) > 2 else "клиент"
 
-    # Отправляем файл через сохранённый file_id
-    file_id = get_file_id()
-    sent    = False
-
-    if file_id:
-        try:
-            await ctx.bot.send_document(
-                chat_id=uid,
-                document=file_id,
-                caption=(
-                    "✅ Ваша оплата подтверждена!\n\n"
-                    "📦 Вот ваш файл программы.\n"
-                    "По вопросам — @itachi_panelll"
-                )
-            )
-            sent = True
-        except Exception as e:
-            await ctx.bot.send_message(LOG_CHAT, f"⚠️ Ошибка отправки файла {uname}: {e}")
-    else:
-        await ctx.bot.send_message(LOG_CHAT, "⚠️ Файл не загружен! Используй /file чтобы загрузить.")
-
+    sent  = await send_file_to(ctx.bot, uid, uname)
     if not sent:
-        await ctx.bot.send_message(
-            uid,
-            "✅ Оплата подтверждена! Файл будет выслан в ближайшее время.\n@itachi_panelll"
-        )
+        await ctx.bot.send_message(uid,
+            "✅ Оплата подтверждена! Файл будет выслан.\n@itachi_panelll")
 
-    result = f"✅ Оплата *{uname}* подтверждена.\n" + ("📦 Файл отправлен." if sent else "⚠️ Файл не найден.")
+    result = f"✅ Оплата *{uname}* подтверждена.\n" + ("📦 Файл отправлен." if sent else "⚠️ Загрузите файл через /file")
     try: await query.edit_message_caption(caption=result, parse_mode="Markdown", reply_markup=None)
     except Exception:
-        try: await query.edit_message_text(text=result, parse_mode="Markdown", reply_markup=None)
+        try: await query.edit_message_text(result, parse_mode="Markdown", reply_markup=None)
         except Exception: pass
 
 async def on_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -370,41 +316,37 @@ async def on_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid   = int(parts[1])
     uname = parts[2] if len(parts) > 2 else "клиент"
 
-    await ctx.bot.send_message(
-        uid, "❌ Ваш чек не был подтверждён.\nСвяжитесь с администратором — @itachi_panelll")
-
+    await ctx.bot.send_message(uid,
+        "❌ Ваш чек не подтверждён.\nСвяжитесь с администратором — @itachi_panelll")
     result = f"❌ Заявка *{uname}* отклонена."
     try: await query.edit_message_caption(caption=result, parse_mode="Markdown", reply_markup=None)
     except Exception:
-        try: await query.edit_message_text(text=result, parse_mode="Markdown", reply_markup=None)
+        try: await query.edit_message_text(result, parse_mode="Markdown", reply_markup=None)
         except Exception: pass
 
-# ── /file — сохраняем file_id (работает на Railway) ───────────────────────
+# ── /file ──────────────────────────────────────────────────────────────────
 
 async def cmd_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text("⛔ Нет доступа."); return
-
+        await update.message.reply_text("⛔"); return
     if update.message.document:
         fid  = update.message.document.file_id
         name = update.message.document.file_name or "файл"
-        # Сохраняем file_id — Telegram хранит файл сам
         FILE_ID_PATH.write_text(fid, encoding="utf-8")
         await update.message.reply_text(
-            f"✅ Файл *{name}* сохранён!\n\n"
-            f"Теперь при подтверждении оплаты клиенты будут получать этот файл автоматически.",
-            parse_mode="Markdown"
-        )
+            f"✅ Файл *{name}* сохранён!\nБудет выдаваться клиентам автоматически.",
+            parse_mode="Markdown")
     else:
         await update.message.reply_text(
-            "📎 *Как загрузить файл:*\n\n"
-            "1. Нажми скрепку 📎\n"
-            "2. Выбери файл\n"
-            "3. В поле подписи напиши `/file`\n"
-            "4. Отправь\n\n"
+            f"📎 Отправь документ с `/file` в подписи.\n\n"
             f"Текущий файл: {'✅ загружен' if get_file_id() else '❌ не загружен'}",
-            parse_mode="Markdown"
-        )
+            parse_mode="Markdown")
+
+async def on_admin_doc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update): return
+    cap = (update.message.caption or "").lower()
+    if "/file" in cap:
+        await cmd_file(update, ctx)
 
 # ── /banner ────────────────────────────────────────────────────────────────
 
@@ -419,6 +361,12 @@ async def cmd_banner(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📸 Отправь фото с `/banner` в подписи.", parse_mode="Markdown")
 
+async def on_admin_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update): return
+    cap = (update.message.caption or "").lower()
+    if "/banner" in cap:
+        await cmd_banner(update, ctx)
+
 # ── /sms ───────────────────────────────────────────────────────────────────
 
 async def cmd_sms(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -428,25 +376,21 @@ async def cmd_sms(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(args) < 3:
         await update.message.reply_text(
             "Использование: `/sms @username логин пароль [HWID]`", parse_mode="Markdown"); return
-
     target = args[0].lstrip("@"); login = args[1]; pw = args[2]
     hwid   = args[3].upper() if len(args) > 3 else None
-
-    users = _load(); entry = {"hash": _hash(pw)}
+    users  = _load(); entry = {"hash": _hash(pw)}
     if hwid: entry["hwid"] = hwid
     users[login] = entry; _save(users)
-
     msg = f"🔑 *Данные для входа:*\n\n👤 Логин: `{login}`\n🔒 Пароль: `{pw}`\n"
     if hwid: msg += f"💻 HWID: `{hwid}`\n"
     msg += "\n⚠️ Не передавайте данные третьим лицам!"
-
     try:
         await ctx.bot.send_message(f"@{target}", msg, parse_mode="Markdown")
         await update.message.reply_text(f"✅ Данные отправлены @{target}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
 
-# ── Админ-команды ──────────────────────────────────────────────────────────
+# ── Прочие команды ─────────────────────────────────────────────────────────
 
 async def cmd_adduser(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update): await update.message.reply_text("⛔"); return
@@ -482,65 +426,16 @@ async def cmd_listusers(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_getid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"ID: `{update.effective_user.id}`", parse_mode="Markdown")
 
-# ── Обработка кнопок клавиатуры ────────────────────────────────────────────
-
-async def on_keyboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    t = update.message.text or ""
-    tl = t.lower()
-    if "купить" in tl:
-        await cmd_buy(update, ctx)
-    elif "информац" in tl:
-        await cmd_info(update, ctx)
-
-# ── Документы от админа ────────────────────────────────────────────────────
-
-async def on_admin_doc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Документы от админа — только если подпись содержит /file."""
-    if not is_admin(update): return
-    cap = (update.message.caption or "").lower()
-    if "/file" in cap:
-        await cmd_file(update, ctx)
-    # Иначе — не перехватываем (пусть ConversationHandler обработает)
-
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # ConversationHandler для флоу покупки
-    conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(on_buy_click,          pattern=r"^buy:\d+:\d+$"),
-            CallbackQueryHandler(on_send_receipt_click,  pattern=r"^send_receipt:"),
-        ],
-        states={
-            WAIT_RECEIPT: [
-                MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment),
-                MessageHandler(
-                    filters.TEXT & filters.Regex("(?i)информац"),
-                    cmd_info
-                ),
-                MessageHandler(
-                    filters.TEXT & filters.Regex("(?i)купить"),
-                    cmd_buy
-                ),
-                MessageHandler(
-                    (filters.PHOTO | filters.Document.ALL |
-                     (filters.TEXT & ~filters.COMMAND)),
-                    on_receipt
-                ),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("start", cmd_start),
-            CommandHandler("info",  cmd_info),
-            MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment),
-            MessageHandler(filters.TEXT & filters.Regex("(?i)информац"), cmd_info),
-            MessageHandler(filters.TEXT & filters.Regex("(?i)купить"),    cmd_buy),
-        ],
-        per_user=True, per_chat=True,
-    )
+    # Stars — первыми
+    app.add_handler(PreCheckoutQueryHandler(on_pre_checkout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment))
 
+    # Команды
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("info",      cmd_info))
     app.add_handler(CommandHandler("file",      cmd_file))
@@ -551,26 +446,26 @@ def main():
     app.add_handler(CommandHandler("listusers", cmd_listusers))
     app.add_handler(CommandHandler("getid",     cmd_getid))
 
-    # Stars платежи — ПЕРВЫМИ, до ConversationHandler
-    app.add_handler(PreCheckoutQueryHandler(on_pre_checkout))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment))
+    # Callback кнопки
+    app.add_handler(CallbackQueryHandler(on_buy_click,         pattern=r"^buy:"))
+    app.add_handler(CallbackQueryHandler(on_stars_click,       pattern=r"^stars:"))
+    app.add_handler(CallbackQueryHandler(on_send_receipt_click, pattern=r"^send_receipt:"))
+    app.add_handler(CallbackQueryHandler(on_confirm,           pattern=r"^confirm:"))
+    app.add_handler(CallbackQueryHandler(on_reject,            pattern=r"^reject:"))
 
-    # ConversationHandler
-    app.add_handler(conv)
-
-    app.add_handler(CallbackQueryHandler(on_stars_click, pattern=r"^stars:"))
-    app.add_handler(CallbackQueryHandler(on_confirm,     pattern=r"^confirm:"))
-    app.add_handler(CallbackQueryHandler(on_reject,      pattern=r"^reject:"))
-
-    # Документы от админа — только с /file в подписи
+    # Документы/фото от админа с /file или /banner в подписи
     app.add_handler(MessageHandler(
-        filters.Document.ALL & filters.User(ADMIN_ID) & filters.CaptionRegex(r"/file"),
-        on_admin_doc
-    ))
-
-    # Кнопки клавиатуры — последними
+        filters.Document.ALL & filters.User(ADMIN_ID) & filters.CaptionRegex(r"(?i)/file"),
+        on_admin_doc))
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, on_keyboard))
+        filters.PHOTO & filters.User(ADMIN_ID) & filters.CaptionRegex(r"(?i)/banner"),
+        on_admin_photo))
+
+    # Все остальные сообщения (текст + фото без подписи + документы без подписи)
+    # Один обработчик — on_message разбирает сам
+    app.add_handler(MessageHandler(
+        (filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND,
+        on_message))
 
     print("Бот запущен...")
     app.run_polling()
